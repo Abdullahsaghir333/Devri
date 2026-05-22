@@ -70,12 +70,15 @@ Copy `.env.example` to `.env` and add your Gemini API key.
 Put settings in `.env` (recommended). When you run the pipeline, `.env` **overrides**
 any `GEMINI_API_KEY` or `GOOGLE_API_KEY` already set in your system environment.
 
-- `GEMINI_API_KEY` — your Google Gemini API key
-- `TRIAGE_LLM_PROVIDER=gemini` — force Gemini (default when key is set)
-- `TRIAGE_LLM_MODEL=gemini-2.0-flash` — model name (default)
-- `TRIAGE_LLM_PROVIDER=fallback` — skip API and use keyword heuristic
+- `GEMINI_API_KEY` — Google Gemini API key (tried first)
+- `GROQ_API_KEY` — Groq API key (used if Gemini fails or is unavailable)
+- `TRIAGE_LLM_PROVIDER=gemini` — Gemini then Groq fallback (default)
+- `TRIAGE_LLM_PROVIDER=groq` — Groq only
+- `TRIAGE_LLM_MODEL=gemini-2.0-flash` — Gemini model
+- `TRIAGE_GROQ_MODEL=llama-3.3-70b-versatile` — Groq model
+- `TRIAGE_LLM_PROVIDER=fallback` — keyword heuristic only (no APIs)
 
-Without a key or SDK, a deterministic keyword heuristic is used so the pipeline still runs offline.
+If both APIs fail, per-ticket keyword heuristic is used and logged in `triage_recovery.log`.
 
 ## Validation
 

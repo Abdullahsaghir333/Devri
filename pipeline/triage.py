@@ -132,6 +132,14 @@ def _gemini_sdk_available() -> bool:
         return False
 
 
+def _groq_sdk_available() -> bool:
+    try:
+        from groq import Groq  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
 def _call_gemini(prompt: str, model: str, api_key: str) -> str:
     from google import genai
     from google.genai import types
@@ -152,6 +160,27 @@ def _call_gemini(prompt: str, model: str, api_key: str) -> str:
     return response.text or "[]"
 
 
+def _call_groq(prompt: str, model: str, api_key: str) -> str:
+    from groq import Groq
+
+    client = Groq(api_key=api_key)
+    response = client.chat.completions.create(
+        model=model,
+        temperature=0,
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "Respond with valid JSON only: a JSON array of ticket objects. "
+                    "No markdown fences or extra text."
+                ),
+            },
+            {"role": "user", "content": prompt},
+        ],
+    )
+    return response.choices[0].message.content or "[]"
+
+
 def _parse_llm_array(raw: str) -> list[dict[str, Any]]:
     text = raw.strip()
     fence = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", text)
@@ -168,22 +197,142 @@ def _log_recovery(message: str) -> None:
         f.write(message + "\n")
 
 
-def _resolve_llm_backend() -> tuple[str | None, str]:
-    """Return (provider_name, model) or (None, heuristic) for fallback."""
-    provider = os.environ.get("TRIAGE_LLM_PROVIDER", "").strip().lower()
-    if provider == "fallback":
-        return None, "keyword-heuristic-v1"
+def _llm_provider_chain() -> list[tuple[str, str, str]]:
+    """
+    Ordered list of (provider, model, env_key_name) to try.
+    Default: Gemini first, then Groq if Gemini fails or is unavailable.
+    """
+    pref = os.environ.get("TRIAGE_LLM_PROVIDER", "").strip().lower()
+    if pref == "fallback":
+        return []
 
-    api_key = os.environ.get("GEMINI_API_KEY", "").strip()
-    use_gemini = provider == "gemini" or (not provider and api_key)
-    if use_gemini and api_key and _gemini_sdk_available():
-        model = os.environ.get("TRIAGE_LLM_MODEL", "gemini-2.0-flash")
-        return "gemini", model
-    if use_gemini and api_key and not _gemini_sdk_available():
-        _log_recovery(
-            "GEMINI_API_KEY set but google-genai not installed; using fallback"
+    gemini_key = os.environ.get("GEMINI_API_KEY", "").strip()
+    groq_key = os.environ.get("GROQ_API_KEY", "").strip()
+    gemini_model = os.environ.get("TRIAGE_LLM_MODEL", "gemini-2.0-flash")
+    groq_model = os.environ.get("TRIAGE_GROQ_MODEL", "llama-3.3-70b-versatile")
+
+    chain: list[tuple[str, str, str]] = []
+
+    def _add_gemini() -> None:
+        if gemini_key and _gemini_sdk_available():
+            chain.append(("gemini", gemini_model, "GEMINI_API_KEY"))
+        elif gemini_key and not _gemini_sdk_available():
+            _log_recovery("GEMINI_API_KEY set but google-genai not installed")
+
+    def _add_groq() -> None:
+        if groq_key and _groq_sdk_available():
+            chain.append(("groq", groq_model, "GROQ_API_KEY"))
+        elif groq_key and not _groq_sdk_available():
+            _log_recovery("GROQ_API_KEY set but groq package not installed")
+
+    if pref == "groq":
+        _add_groq()
+        return chain
+    if pref == "gemini":
+        _add_gemini()
+        _add_groq()
+        return chain
+
+    # Default: try Gemini, fall back to Groq
+    _add_gemini()
+    _add_groq()
+    return chain
+
+
+def _api_key_for(env_name: str) -> str:
+    return os.environ.get(env_name, "").strip()
+
+
+def _invoke_llm(provider: str, prompt: str, model: str, api_key: str) -> str:
+    if provider == "gemini":
+        return _call_gemini(prompt, model, api_key)
+    if provider == "groq":
+        return _call_groq(prompt, model, api_key)
+    raise ValueError(f"Unknown LLM provider: {provider}")
+
+
+def _populate_raw_by_id(
+    parsed: list[dict[str, Any]], raw_by_id: dict[str, dict[str, Any]]
+) -> None:
+    for item in parsed:
+        if isinstance(item, dict) and "ticket_id" in item:
+            raw_by_id[str(item["ticket_id"])] = item
+
+
+def _missing_ticket_ids(
+    normalized: list[dict[str, Any]], raw_by_id: dict[str, dict[str, Any]]
+) -> list[str]:
+    return [t["ticket_id"] for t in normalized if t["ticket_id"] not in raw_by_id]
+
+
+def _run_llm_chain(
+    prompt: str,
+    normalized: list[dict[str, Any]],
+    *,
+    llm_log_path: Path,
+    output_path: Path,
+) -> dict[str, dict[str, Any]]:
+    """Try Gemini then Groq; return partial or full raw predictions by ticket_id."""
+    raw_by_id: dict[str, dict[str, Any]] = {}
+    chain = _llm_provider_chain()
+
+    for idx, (provider_name, model, key_env) in enumerate(chain):
+        missing_before = _missing_ticket_ids(normalized, raw_by_id)
+        if not missing_before and raw_by_id:
+            break
+
+        api_key = _api_key_for(key_env)
+        if not api_key:
+            continue
+
+        if idx > 0:
+            _log_recovery(f"Falling back to {provider_name} ({model})")
+
+        log_llm_call(
+            llm_log_path,
+            stage="TRIAGE_PREDICTED",
+            provider=provider_name,
+            model=model,
+            prompt=prompt,
+            input_artifacts=[str(NORMALIZED_PATH), str(CONFIG_PATH)],
+            output_artifact=str(output_path),
         )
-    return None, "keyword-heuristic-v1"
+
+        try:
+            content = _invoke_llm(provider_name, prompt, model, api_key)
+            parsed = _parse_llm_array(content)
+            _populate_raw_by_id(parsed, raw_by_id)
+        except (json.JSONDecodeError, ValueError) as exc:
+            _log_recovery(f"{provider_name} batch parse failed ({exc})")
+        except Exception as exc:
+            _log_recovery(f"{provider_name} API call failed ({exc})")
+
+        missing_after = _missing_ticket_ids(normalized, raw_by_id)
+        filled = len(normalized) - len(missing_after)
+        if not missing_after:
+            _log_recovery(
+                f"{provider_name} succeeded for all {filled} ticket(s)"
+            )
+            break
+        if filled > 0:
+            _log_recovery(
+                f"{provider_name} partially succeeded ({filled} ticket(s)); "
+                f"still missing {missing_after}"
+            )
+        else:
+            _log_recovery(
+                f"{provider_name} returned no tickets; trying next provider if configured"
+            )
+        remaining = [c[0] for c in chain[idx + 1 :]]
+        if provider_name == "gemini" and "groq" not in remaining:
+            if not os.environ.get("GROQ_API_KEY", "").strip():
+                _log_recovery(
+                    "Groq fallback skipped: add GROQ_API_KEY to your .env file"
+                )
+            elif not _groq_sdk_available():
+                _log_recovery("Groq fallback skipped: run pip install groq")
+
+    return raw_by_id
 
 
 def _coerce_prediction(
@@ -253,47 +402,38 @@ def predict_triage(
     llm_log_path: Path = LLM_LOG_PATH,
 ) -> list[dict[str, Any]]:
     prompt = _build_prompt(normalized, config)
-    provider_name, model = _resolve_llm_backend()
-
-    raw_by_id: dict[str, dict[str, Any]] = {}
-    log_llm_call(
-        llm_log_path,
-        stage="TRIAGE_PREDICTED",
-        provider=provider_name or "deterministic_fallback",
-        model=model,
-        prompt=prompt,
-        input_artifacts=[str(NORMALIZED_PATH), str(CONFIG_PATH)],
-        output_artifact=str(output_path),
+    raw_by_id = _run_llm_chain(
+        prompt, normalized, llm_log_path=llm_log_path, output_path=output_path
     )
 
-    if provider_name == "gemini":
-        api_key = os.environ["GEMINI_API_KEY"].strip()
-        try:
-            content = _call_gemini(prompt, model, api_key)
-            parsed = _parse_llm_array(content)
-            for item in parsed:
-                if isinstance(item, dict) and "ticket_id" in item:
-                    raw_by_id[str(item["ticket_id"])] = item
-        except (json.JSONDecodeError, ValueError) as exc:
-            _log_recovery(f"Batch Gemini parse failed ({exc}); per-ticket fallback")
-        except Exception as exc:
-            _log_recovery(f"Gemini API call failed ({exc}); per-ticket fallback")
-    else:
-        for ticket in normalized:
-            cat, conf = _keyword_category(ticket["text_for_model"])
-            pri = _keyword_priority(ticket["text_for_model"], config)
-            raw_by_id[ticket["ticket_id"]] = {
-                "ticket_id": ticket["ticket_id"],
-                "category": cat,
-                "priority": pri,
-                "reason": "Classified by deterministic keyword heuristic (no Gemini)",
-                "suggested_reply": _fallback_reply(
-                    validate_category(config, cat),
-                    ticket["ticket_id"],
-                    config["reply_style"]["max_words"],
-                ),
-                "confidence": conf,
-            }
+    if not raw_by_id:
+        log_llm_call(
+            llm_log_path,
+            stage="TRIAGE_PREDICTED",
+            provider="deterministic_fallback",
+            model="keyword-heuristic-v1",
+            prompt=prompt,
+            input_artifacts=[str(NORMALIZED_PATH), str(CONFIG_PATH)],
+            output_artifact=str(output_path),
+        )
+
+    for ticket in normalized:
+        if ticket["ticket_id"] in raw_by_id:
+            continue
+        cat, conf = _keyword_category(ticket["text_for_model"])
+        pri = _keyword_priority(ticket["text_for_model"], config)
+        raw_by_id[ticket["ticket_id"]] = {
+            "ticket_id": ticket["ticket_id"],
+            "category": cat,
+            "priority": pri,
+            "reason": "Classified by keyword heuristic (LLM providers unavailable or failed)",
+            "suggested_reply": _fallback_reply(
+                validate_category(config, cat),
+                ticket["ticket_id"],
+                config["reply_style"]["max_words"],
+            ),
+            "confidence": conf,
+        }
 
     predictions: list[dict[str, Any]] = []
     for ticket in normalized:

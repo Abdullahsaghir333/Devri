@@ -2,37 +2,37 @@
   {
     "ticket_id": "T-1001",
     "category": "billing_issue",
-    "priority": "high",
-    "reason": "Recovered: ticket missing from batch LLM response",
-    "suggested_reply": "Thank you for contacting us regarding ticket T-1001. We are reviewing the billing details and will follow up shortly.",
+    "priority": "urgent",
+    "reason": "Double charge reported",
+    "suggested_reply": "Sorry to hear that. We'll look into the double charge and assist with a reversal.",
     "route_to": "payments_queue",
-    "confidence": 0.85
+    "confidence": 0.9
   },
   {
     "ticket_id": "T-1002",
     "category": "account_access",
     "priority": "urgent",
-    "reason": "Recovered: ticket missing from batch LLM response",
-    "suggested_reply": "We received your access request for ticket T-1002. Our team is checking your account and will help restore access.",
+    "reason": "Login issue after password reset",
+    "suggested_reply": "We'll help you regain access. Please try clearing app data and retrying.",
     "route_to": "trust_and_access_queue",
-    "confidence": 0.93
+    "confidence": 0.95
   },
   {
     "ticket_id": "T-1003",
     "category": "product_how_to",
     "priority": "normal",
-    "reason": "Recovered: ticket missing from batch LLM response",
-    "suggested_reply": "Thanks for your question on ticket T-1003. We will share step-by-step instructions to complete your request.",
+    "reason": "Transaction history export inquiry",
+    "suggested_reply": "You can export your transaction history from the settings menu.",
     "route_to": "general_support_queue",
-    "confidence": 0.9
+    "confidence": 0.8
   },
   {
     "ticket_id": "T-1004",
     "category": "bug_report",
     "priority": "high",
-    "reason": "Recovered: ticket missing from batch LLM response",
-    "suggested_reply": "Sorry for the trouble reported in ticket T-1004. Engineering has been notified and we will update you on next steps.",
+    "reason": "App crash reported",
+    "suggested_reply": "Sorry for the inconvenience. We'll investigate the app crash issue.",
     "route_to": "technical_queue",
-    "confidence": 0.82
+    "confidence": 0.9
   }
 ]
