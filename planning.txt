@@ -1,0 +1,274 @@
+================================================================================
+SUPPORT TICKET TRIAGE PIPELINE — PLANNING & IMPLEMENTATION NOTES
+================================================================================
+Project: MERYDEV
+Language: Python (virtual environment recommended)
+LLM Provider: Google Gemini API
+Last updated: 2026-05-23
+
+================================================================================
+1. PROJECT GOAL
+================================================================================
+
+Build a replayable support-triage pipeline that:
+
+  - Reads tickets and config from disk (not hardcoded)
+  - Normalizes tickets deterministically BEFORE any LLM call
+  - Classifies all tickets in one batch Gemini call
+  - Enforces allowed categories/priorities from config
+  - Computes routing from config rules (not from the model)
+  - Pauses for human review so overrides change final outputs
+  - Produces a final agent queue + markdown summary
+  - Can be validated and re-run from a clean checkout
+
+This is workflow software, not a one-shot prompt demo.
+
+================================================================================
+2. HIGH-LEVEL ARCHITECTURE
+================================================================================
+
+  tickets.json + triage_config.json
+           |
+           v
+  [1] Load inputs          (INPUTS_LOADED)
+           |
+           v
+  [2] Normalize tickets    (TICKETS_NORMALIZED)  <-- NO LLM HERE
+           |  writes: normalized_tickets.json
+           v
+  [3] Gemini batch triage  (TRIAGE_PREDICTED)
+           |  writes: triage_predictions.json, llm_calls.jsonl
+           v
+  [4] Human review         (HUMAN_REVIEW_COMPLETE)
+           |  writes: review_overrides.json
+           v
+  [5] Final queue          (FINAL_QUEUE_GENERATED)
+           |  writes: final_queue.json, queue_summary.md, escalations.json
+           v
+  [6] validate.py          (optional check)
+
+Stage order is enforced in pipeline/stages.py — you cannot skip to the
+final queue before normalization, prediction, and review complete.
+
+================================================================================
+3. REPOSITORY STRUCTURE (WHAT WAS CREATED)
+================================================================================
+
+INPUTS (evaluator may replace with equivalent fixtures)
+  tickets.json              Sample customer support tickets
+  triage_config.json        Categories, priorities, reply style, routing
+
+PIPELINE PACKAGE (pipeline/)
+  __init__.py               Package exports
+  paths.py                  All artifact file paths
+  stages.py                 Stage enum + strict stage transitions
+  config.py                 Load config, validate category/priority, routing
+  normalize.py              Deterministic text_for_model + char_count
+  triage.py                 Gemini batch call + validation + fallback
+  review.py                 Interactive human override checkpoint
+  queue.py                  Final queue, summary markdown, escalations
+  llm_log.py                Append-only llm_calls.jsonl logging
+
+ENTRY POINTS
+  run_pipeline.py           Main script to run the full pipeline
+  validate.py               Checks artifacts and business rules
+
+CONFIG / DOCS
+  requirements.txt          google-genai (Gemini SDK)
+  .env.example              Template for GEMINI_API_KEY (copy to .env)
+  Makefile                  run, validate, clean targets
+  README.md                 Quick start and usage
+  planning.txt              This file
+
+GENERATED AT RUN TIME (not committed; .gitignore covers .env)
+  normalized_tickets.json
+  triage_predictions.json
+  review_overrides.json
+  final_queue.json
+  queue_summary.md
+  escalations.json
+  llm_calls.jsonl
+  pipeline_state.json
+  triage_recovery.log       (only if batch recovery was needed)
+
+================================================================================
+4. PIPELINE STAGES (ENFORCED IN CODE)
+================================================================================
+
+  INIT
+    -> INPUTS_LOADED
+    -> TICKETS_NORMALIZED      (deterministic normalization first)
+    -> TRIAGE_PREDICTED        (single Gemini call for all tickets)
+    -> HUMAN_REVIEW_COMPLETE   (interactive overrides)
+    -> FINAL_QUEUE_GENERATED   (post-review outputs only)
+    -> VALIDATION_COMPLETE     (when you run validate.py)
+    -> RESULTS_FINALISED
+
+  pipeline_state.json records current stage and history for auditors.
+
+================================================================================
+5. KEY DESIGN DECISIONS
+================================================================================
+
+5.1 Deterministic normalization (pipeline/normalize.py)
+  - text_for_model = "Subject: {subject}\n\nMessage: {message}"
+  - Whitespace collapsed with regex (deterministic)
+  - char_count = len(text_for_model)
+  - Written to normalized_tickets.json BEFORE any LLM call
+
+5.2 Gemini integration (pipeline/triage.py)
+  - One batch prompt containing all tickets
+  - Uses google-genai SDK (pip install google-genai)
+  - Model default: gemini-2.0-flash (override via TRIAGE_LLM_MODEL)
+  - temperature=0, response_mime_type=application/json for stable JSON
+  - route_to is NEVER taken from the model — computed from routing_rules
+  - category/priority validated against triage_config.json
+
+5.3 Fallback when offline (no key or SDK missing)
+  - Keyword heuristic on text_for_model (not ticket IDs)
+  - Still writes llm_calls.jsonl with provider=deterministic_fallback
+  - Evaluator can run without API; you use Gemini when key is set
+
+5.4 Human review (pipeline/review.py)
+  - Prints each ticket's predicted category and priority
+  - Prompt: ticket_id,category,priority (empty line to finish)
+  - Saves review_overrides.json with old/new values
+  - Recomputes route_to when category changes
+  - final_queue.json uses POST-review values
+
+5.5 Escalations (pipeline/queue.py) — deterministic rules
+  - Flag if category == "other"
+  - Flag if confidence < 0.60 (confidence may come from Gemini)
+  - Saved to escalations.json
+
+5.6 Batch resilience (pipeline/triage.py)
+  - Missing/malformed ticket in LLM response -> keyword fallback for that ticket
+  - Logged in triage_recovery.log
+  - Pipeline does not crash on one bad row
+
+================================================================================
+6. PYTHON VIRTUAL ENVIRONMENT SETUP (YOUR WORKFLOW)
+================================================================================
+
+Step 1 — Create and activate venv (from project root):
+
+  python -m venv venv
+  venv\Scripts\activate          # Windows PowerShell/CMD
+  # source venv/bin/activate     # macOS/Linux
+
+Step 2 — Install dependencies:
+
+  pip install -r requirements.txt
+
+Step 3 — Configure Gemini (never commit .env):
+
+  copy .env.example .env
+  # Edit .env and set:
+  GEMINI_API_KEY=your_key_here
+  TRIAGE_LLM_PROVIDER=gemini
+  TRIAGE_LLM_MODEL=gemini-2.0-flash
+
+  (.env is already in .gitignore)
+
+Step 4 — Run pipeline (interactive review):
+
+  python run_pipeline.py
+
+Step 5 — Or non-interactive (CI / quick test, no overrides):
+
+  python run_pipeline.py --non-interactive
+
+Step 6 — Validate outputs:
+
+  python validate.py
+  # or: make validate
+
+================================================================================
+7. HUMAN REVIEW — HOW TO USE
+================================================================================
+
+After triage runs, the terminal shows predictions, e.g.:
+
+  T-1001: category=billing_issue, priority=high, route_to=payments_queue
+
+To override a ticket, type one line per override:
+
+  T-1002,account_access,urgent
+
+Press Enter on an empty line when done.
+
+Overrides must use categories/priorities from triage_config.json only.
+
+================================================================================
+8. ENVIRONMENT VARIABLES
+================================================================================
+
+  GEMINI_API_KEY           Required for live Gemini triage
+  TRIAGE_LLM_PROVIDER      gemini | fallback (default: gemini if key set)
+  TRIAGE_LLM_MODEL         Default: gemini-2.0-flash
+
+pipeline/env.py load_dotenv(override=True): .env values REPLACE global/system
+env vars. If .env sets GEMINI_API_KEY, any global GOOGLE_API_KEY is removed so
+the SDK uses only your project key.
+
+================================================================================
+9. VALIDATION (validate.py)
+================================================================================
+
+Checks include:
+  - All required artifact files exist and parse as JSON
+  - text_for_model matches deterministic builder
+  - Normalization timestamp/order before LLM artifacts
+  - Exactly one prediction per ticket
+  - category/priority in allowed lists
+  - route_to matches routing_rules
+  - Overrides recorded correctly and applied in final_queue.json
+  - suggested_reply word count <= max_words
+  - queue_summary.md contains ticket totals
+
+================================================================================
+10. WHAT CHANGED FOR GEMINI (vs initial scaffold)
+================================================================================
+
+  - Removed OpenAI dependency from requirements.txt
+  - Added google-genai package
+  - Replaced _call_openai with _call_gemini in pipeline/triage.py
+  - Provider resolution prefers GEMINI_API_KEY from .env
+  - Added .env.example template
+  - Updated README with venv + Gemini instructions
+  - Graceful fallback if google-genai not installed but key is set
+
+================================================================================
+11. EXECUTION ORDER FOR EVALUATOR / YOU
+================================================================================
+
+  1. Activate venv
+  2. pip install -r requirements.txt
+  3. Ensure .env has GEMINI_API_KEY (or use --non-interactive with fallback)
+  4. python run_pipeline.py
+  5. Complete human review (or use --non-interactive)
+  6. python validate.py
+
+To regenerate from scratch, run_pipeline.py deletes old artifacts by default.
+Use --no-reset to keep prior files.
+
+================================================================================
+12. SECURITY NOTE
+================================================================================
+
+  - Keep API keys only in .env (gitignored)
+  - Do not commit .env or paste keys into planning.txt / README
+  - Use .env.example with placeholders for sharing the repo
+
+================================================================================
+13. POSSIBLE NEXT STEPS (OPTIONAL)
+================================================================================
+
+  - Pin exact gemini model version for reproducibility across runs
+  - Add pytest tests that mock Gemini responses
+  - Wire validate.py to advance pipeline to VALIDATION_COMPLETE stage
+  - Add stdin file for overrides in non-interactive CI with fixed corrections
+
+================================================================================
+END OF PLANNING DOCUMENT
+================================================================================

@@ -1,0 +1,10 @@
+{
+  "current_stage": "FINAL_QUEUE_GENERATED",
+  "history": [
+    "INPUTS_LOADED",
+    "TICKETS_NORMALIZED",
+    "TRIAGE_PREDICTED",
+    "HUMAN_REVIEW_COMPLETE",
+    "FINAL_QUEUE_GENERATED"
+  ]
+}

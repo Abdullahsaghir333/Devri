@@ -1,0 +1,38 @@
+[
+  {
+    "ticket_id": "T-1001",
+    "category": "billing_issue",
+    "priority": "high",
+    "reason": "Recovered: ticket missing from batch LLM response",
+    "suggested_reply": "Thank you for contacting us regarding ticket T-1001. We are reviewing the billing details and will follow up shortly.",
+    "route_to": "payments_queue",
+    "confidence": 0.85
+  },
+  {
+    "ticket_id": "T-1002",
+    "category": "account_access",
+    "priority": "urgent",
+    "reason": "Recovered: ticket missing from batch LLM response",
+    "suggested_reply": "We received your access request for ticket T-1002. Our team is checking your account and will help restore access.",
+    "route_to": "trust_and_access_queue",
+    "confidence": 0.93
+  },
+  {
+    "ticket_id": "T-1003",
+    "category": "product_how_to",
+    "priority": "normal",
+    "reason": "Recovered: ticket missing from batch LLM response",
+    "suggested_reply": "Thanks for your question on ticket T-1003. We will share step-by-step instructions to complete your request.",
+    "route_to": "general_support_queue",
+    "confidence": 0.9
+  },
+  {
+    "ticket_id": "T-1004",
+    "category": "bug_report",
+    "priority": "high",
+    "reason": "Recovered: ticket missing from batch LLM response",
+    "suggested_reply": "Sorry for the trouble reported in ticket T-1004. Engineering has been notified and we will update you on next steps.",
+    "route_to": "technical_queue",
+    "confidence": 0.82
+  }
+]
