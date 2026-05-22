@@ -1,8 +1,10 @@
 {
-  "current_stage": "TRIAGE_PREDICTED",
+  "current_stage": "FINAL_QUEUE_GENERATED",
   "history": [
     "INPUTS_LOADED",
     "TICKETS_NORMALIZED",
-    "TRIAGE_PREDICTED"
+    "TRIAGE_PREDICTED",
+    "HUMAN_REVIEW_COMPLETE",
+    "FINAL_QUEUE_GENERATED"
   ]
 }
